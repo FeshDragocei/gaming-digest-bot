@@ -109,3 +109,45 @@ Change visibility → Public): в коде нет никаких секрето�
 **GitHub прислал письмо «Scheduled workflow is disabled»?**
 Если вы не заходили в репозиторий 60 дней, GitHub ставит расписание на паузу.
 Достаточно зайти в репозиторий и в Actions нажать «Enable workflow».
+
+---
+
+# 🕒 План Б: внешний таймер (если расписание GitHub не срабатывает)
+
+У планировщика GitHub бывают отказы: запуски по `schedule` просто не наступают
+(диагностируется легко: в журнале Actions нет запусков с пометкой Schedule).
+Решение — бесплатный сервис cron-job.org, который каждые 30 минут запускает
+бота через GitHub API. Настройка один раз, дальше всё работает само.
+
+## Шаг 1. Создайте токен (2 минуты)
+
+1. Откройте: **https://github.com/settings/personal-access-tokens/new**
+2. Token name: `cron trigger`
+3. Expiration: **No expiration**
+4. Repository access: **Only select repositories** → выберите `gaming-digest-bot`
+5. Permissions → Repository permissions → **Actions** → **Read and write**
+6. Нажмите **Generate token** и скопируйте токен (начинается с `github_pat_...`)
+
+Токен узкий: он позволяет только запускать workflow этого одного репозитория.
+
+## Шаг 2. Создайте таймер (5 минут)
+
+1. Зарегистрируйтесь на **https://cron-job.org** (бесплатно, подтвердите email)
+2. В панели: **Cronjobs → Create cronjob**
+3. Title: `Gaming news`
+4. **URL**: `https://api.github.com/repos/FeshDragocei/gaming-digest-bot/actions/workflows/digest.yml/dispatches`
+5. Раздел **Schedule**: выберите **Every 30 minutes**
+6. Раздел **Advanced**:
+   - **HTTP Method**: `POST`
+   - **Headers** — добавьте два:
+     - `Authorization` : `Bearer ВАШ_ТОКЕН` (токен из шага 1, после слова Bearer с пробелом)
+     - `Accept` : `application/vnd.github+json`
+   - **Body**: `{"ref":"main"}`
+7. Нажмите **Save** и включите переключатель таймера
+
+Токен вводится только на сайте cron-job.org — никому его пересылать не нужно.
+
+## Как проверить
+
+Подождите ближайшие полчаса: в журнале Actions репозитория появятся новые
+запуски (в журнале cron-job.org тоже видно историю вызовов).
