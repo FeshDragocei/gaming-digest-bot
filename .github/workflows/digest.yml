@@ -33,7 +33,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          FRESH_HOURS: "24"
+          FRESH_HOURS: "12"
           TIMEZONE: Europe/Moscow
         run: python scripts/publish_now.py
 

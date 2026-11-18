@@ -46,7 +46,7 @@ pip install -r requirements.txt
 BOT_TOKEN=1234567890:AAHfk2...      # токен из BotFather
 CHANNEL_ID=-1001234567890           # или @имя_канала
 CHECK_INTERVAL_MINUTES=30           # как часто проверять новости (минуты)
-FRESH_HOURS=24                      # сколько часов назад искать новости
+FRESH_HOURS=12                      # сколько часов назад искать новости
 TIMEZONE=Europe/Moscow
 ```
 

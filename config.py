@@ -20,7 +20,7 @@ class Config:
     timezone: str = os.getenv("TIMEZONE", "Europe/Moscow")
 
     # Сколько часов назад искать новости
-    fresh_hours: int = int(os.getenv("FRESH_HOURS", "24"))
+    fresh_hours: int = int(os.getenv("FRESH_HOURS", "12"))
 
     # Файл с историей опубликованных новостей (для защиты от повторов)
     seen_file: Path = BASE_DIR / "data" / "seen_news.json"

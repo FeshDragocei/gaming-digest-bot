@@ -8,7 +8,7 @@ import html
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from deep_translator import GoogleTranslator
@@ -22,6 +22,10 @@ log = logging.getLogger(__name__)
 MIN_SCORE = 2
 # Если столько новостей ждёт публикации — выпускаем за раз две, чтобы разгрести очередь
 BACKLOG_BATCH_AT = 10
+# Сколько дней помнить опубликованные новости (защита от повторов)
+SEEN_TTL_DAYS = 7
+# Порог похожести заголовков (0..1): выше — та же новость с другого сайта
+DUP_SIMILARITY = 0.55
 
 # Ключевые слова, повышающие интересность новости: релизы, анонсы, события
 # индустрии, необычные факты, а также скидки, распродажи и раздачи
@@ -173,18 +177,37 @@ def score_item(item: NewsItem) -> int:
 
 # ---------------------------------------------------------------- дедупликация
 
-def _load_seen() -> dict[str, str]:
+def _load_seen() -> dict[str, dict]:
+    """История опубликованного: hash -> {ts, t} (t — нормализованный заголовок).
+
+    Поддерживаем и старый формат (hash -> строка-дата), чтобы ничего не потерять.
+    """
     try:
         CFG.seen_file.parent.mkdir(parents=True, exist_ok=True)
-        return json.loads(CFG.seen_file.read_text(encoding="utf-8"))
+        raw = json.loads(CFG.seen_file.read_text(encoding="utf-8"))
+        return {
+            k: v if isinstance(v, dict) else {"ts": None, "t": ""}
+            for k, v in raw.items()
+        }
     except Exception:
         return {}
 
 
-def _save_seen(seen: dict[str, str]) -> None:
+def _save_seen(seen: dict[str, dict]) -> None:
+    """Сохраняет историю, выкидывая записи старше SEEN_TTL_DAYS."""
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=SEEN_TTL_DAYS)
+    fresh: dict[str, dict] = {}
+    for h, v in seen.items():
+        ts = v.get("ts")
+        try:
+            keep = ts is None or datetime.fromisoformat(ts) >= cutoff
+        except ValueError:
+            keep = False
+        if keep:
+            fresh[h] = v
     try:
         CFG.seen_file.parent.mkdir(parents=True, exist_ok=True)
-        CFG.seen_file.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
+        CFG.seen_file.write_text(json.dumps(fresh, ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception as e:
         log.warning("Не удалось сохранить историю: %s", e)
 
@@ -193,12 +216,18 @@ def mark_published(items: list[NewsItem]) -> None:
     seen = _load_seen()
     now = datetime.now(tz=timezone.utc).isoformat()
     for it in items:
-        seen[_hash(it.title, it.url)] = now
+        seen[_hash(it.title, it.url)] = {"ts": now, "t": _norm_title(it.title)}
     _save_seen(seen)
 
 
-def _drop_seen_and_dupes(items: list[NewsItem], seen: dict[str, str]) -> list[NewsItem]:
-    """Убирает уже публиковавшиеся и очень похожие друг на друга новости."""
+def _similar(a: str, b: str) -> bool:
+    return difflib.SequenceMatcher(None, a, b).ratio() > DUP_SIMILARITY
+
+
+def _drop_seen_and_dupes(items: list[NewsItem], seen: dict[str, dict]) -> list[NewsItem]:
+    """Убирает уже публиковавшиеся и очень похожие новости (в т.ч. с прошлых
+    выпусков — та же история с другого сайта в другой формулировке)."""
+    seen_titles = [v.get("t", "") for v in seen.values() if v.get("t")]
     result: list[NewsItem] = []
     kept_titles: list[str] = []
     for it in items:
@@ -206,8 +235,10 @@ def _drop_seen_and_dupes(items: list[NewsItem], seen: dict[str, str]) -> list[Ne
         if h in seen:
             continue
         norm = _norm_title(it.title)
-        if any(difflib.SequenceMatcher(None, norm, kept).ratio() > 0.7 for kept in kept_titles):
-            continue  # одна и та же новость на разных сайтах
+        if any(_similar(norm, other) for other in seen_titles):
+            continue  # похожее уже выходило в канал
+        if any(_similar(norm, kept) for kept in kept_titles):
+            continue  # дубль внутри текущей выборки
         kept_titles.append(norm)
         result.append(it)
     return result
@@ -236,9 +267,10 @@ async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
 
     for it in items:
         it.score = score_item(it)
+    # Сначала самые свежие (канал должен следить за потоком), интересность — как тайбрейк
     candidates = sorted(
         (it for it in items if it.score >= MIN_SCORE),
-        key=lambda i: (i.score, i.published or datetime.min.replace(tzinfo=timezone.utc)),
+        key=lambda i: (i.published or datetime.now(tz=timezone.utc), i.score),
         reverse=True,
     )
     if not candidates:
