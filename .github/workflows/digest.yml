@@ -7,8 +7,8 @@ on:
   workflow_dispatch:        # кнопка «Run workflow» — выпустить следующую новость сейчас
 
 concurrency:
-  group: digest            # не даём двум проверкам запускаться одновременно
-  cancel-in-progress: false
+  group: digest            # одна проверка за раз
+  cancel-in-progress: true # зависшую отменяет следующий запуск, очередь не копится
 
 permissions:
   contents: write           # чтобы workflow мог сохранить историю новостей
@@ -16,6 +16,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 10      # зависший запуск принудительно завершается
     steps:
       - name: Забрать код
         uses: actions/checkout@v4
