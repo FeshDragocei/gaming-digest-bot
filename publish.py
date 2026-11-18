@@ -6,7 +6,7 @@ import logging
 
 import aiohttp
 from aiogram import Bot
-from aiogram.types import BufferedInputFile, InputMediaPhoto
+from aiogram.types import BufferedInputFile
 
 import digest
 from digest import mark_published
@@ -55,22 +55,13 @@ async def _send_one_with_photo(bot: Bot, chat_id: str, item: NewsItem) -> bool:
     return False
 
 
-async def _send_album(bot: Bot, chat_id: str, items: list[NewsItem]) -> bool:
-    """Отправляет альбом (до 10 фото) с индивидуальными подписями."""
-    media = [
-        InputMediaPhoto(media=it.image, caption=digest.caption_for(it), parse_mode="HTML")
-        for it in items
-    ]
-    try:
-        await bot.send_media_group(chat_id, media=media)
-        return True
-    except Exception as e:
-        log.warning("Альбом не отправился (%s), пробую по одной", e)
-        return False
-
-
 async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
-    """Публикует шапку дайджеста и все новости. Пропущенные помечает всё равно."""
+    """Публикует шапку дайджеста и каждую новость отдельным постом.
+
+    Формат «картинка + небольшой пост»: у каждого фото видна подпись с
+    заголовком, кратким описанием и ссылкой. Новости без картинки (или
+    с нескачиваемой) уходят текстом, чтобы ничего не потерялось.
+    """
     if not items:
         log.info("Дайджест пуст — нечего публиковать")
         return
@@ -81,35 +72,18 @@ async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
     except Exception as e:
         log.error("Не удалось отправить шапку в %s: %s", chat_id, e)
 
-    with_photo = [it for it in items if it.image]
-    without_photo = [it for it in items if not it.image]
-
-    # Альбом, если новостей с фото несколько (иначе — по одной)
-    sent_ok: set[int] = set()
-    failed_photo: list[NewsItem] = []
-    if len(with_photo) >= 3:
-        if await _send_album(bot, chat_id, with_photo[:10]):
-            sent_ok.update(id(it) for it in with_photo[:10])
-        else:
-            for it in with_photo[:10]:
-                if await _send_one_with_photo(bot, chat_id, it):
-                    sent_ok.add(id(it))
-                else:
-                    failed_photo.append(it)
-    else:
-        for it in with_photo:
-            if await _send_one_with_photo(bot, chat_id, it):
-                sent_ok.add(id(it))
-            else:
-                failed_photo.append(it)
-
-    # Новости без фото + те, чьё фото не отправилось ни одним способом — текстом
-    for it in failed_photo + without_photo:
-        try:
-            await bot.send_message(chat_id, digest.caption_for(it), parse_mode="HTML")
-            sent_ok.add(id(it))
-        except Exception as e:
-            log.warning("Текстовая новость не отправилась: %s", e)
+    for it in items:
+        sent = False
+        if it.image:
+            sent = await _send_one_with_photo(bot, chat_id, it)
+        if not sent:
+            try:
+                await bot.send_message(chat_id, digest.caption_for(it), parse_mode="HTML")
+                sent = True
+            except Exception as e:
+                log.warning("Текстовая новость не отправилась: %s", e)
+        if not sent:
+            log.error("Новость не опубликована ни фото, ни текстом: %s", it.title[:60])
 
     # Помечаем ВСЕ новости выпуска как показанные, чтобы не всплывали в следующем
     mark_published(items)
