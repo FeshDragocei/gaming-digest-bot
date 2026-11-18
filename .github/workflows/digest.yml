@@ -1,0 +1,46 @@
+name: Игровой дайджест
+
+on:
+  schedule:
+    # Внимание: время в GitHub Actions — UTC. Москва = UTC+3.
+    - cron: "0 7 * * *"    # 10:00 по Москве
+    - cron: "0 16 * * *"   # 19:00 по Москве
+  workflow_dispatch:        # кнопка «Run workflow» для ручного запуска
+
+permissions:
+  contents: write           # чтобы workflow мог сохранить историю новостей
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Собрать и опубликовать дайджест
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          NEWS_PER_DIGEST: "5"
+          FRESH_HOURS: "12"
+          TIMEZONE: Europe/Moscow
+        run: python scripts/publish_now.py
+
+      - name: Сохранить историю опубликованных новостей
+        run: |
+          git config user.name "digest-bot"
+          git config user.email "action@github.com"
+          if [ -f data/seen_news.json ]; then
+            git add data/seen_news.json
+            git diff --cached --quiet || git commit -m "chore: обновить историю новостей [skip ci]"
+            git push
+          fi
