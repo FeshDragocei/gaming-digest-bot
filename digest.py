@@ -1,4 +1,4 @@
-"""Формирование дайджеста: отбор интересного, дедупликация, перевод, текст постов."""
+"""Отбор и подготовка новостей: интересность, дедупликация, пересказ, перевод."""
 from __future__ import annotations
 
 import asyncio
@@ -14,19 +14,30 @@ import aiohttp
 from deep_translator import GoogleTranslator
 
 from config import CFG
-from news import NewsItem
+from news import NewsItem, collect_news, enrich_item
 
 log = logging.getLogger(__name__)
 
-# Ключевые слова, повышающие интересность новости (тема выпуска: релизы,
-# анонсы, события индустрии, необычные факты)
+# Минимальная «интересность» для публикации (1 совпадение ключевого слова = 2 балла)
+MIN_SCORE = 2
+# Если столько новостей ждёт публикации — выпускаем за раз две, чтобы разгрести очередь
+BACKLOG_BATCH_AT = 10
+
+# Ключевые слова, повышающие интересность новости: релизы, анонсы, события
+# индустрии, необычные факты, а также скидки, распродажи и раздачи
 SCORE_WORDS = {
     "ru": [
         "релиз", "вышла", "вышел", "выходит", "анонс", "анонсирован", "представлен",
         "трейлер", "геймплей", "обзор", "продаж", "рекорд", "миллион", "миллиард",
-        "банкрот", "закрыт", "уволен", "сокращ", "ремейк", "ремастер", "перезапуск",
-        "объяви", "показ", "конкурс", "игра года", "наград", "суд", "скандал",
-        "дата выхода", "обновлен", "патч", "обвал", "переиздан", "сиквел", "первый",
+        "банкрот", "закрыл", "закрыт", "уволен", "уволил", "сокращ", "ремейк",
+        "ремастер", "перезапуск", "объяви", "показ", "игра года", "наград", "суд",
+        "иск ", "скандал", "дата выхода", "обновлен", "патч", "переиздан", "сиквел",
+        "первый", "подтверд", "отмен", "перенес", "задерж", "слух", "утеч", "взлом",
+        "рейтинг", "метакритик", "интервью", "игрок", "сделк", "слиян", "поглощ",
+        "купил", "прода", "штраф",
+        # скидки и раздачи
+        "скидк", "распрода", "дешев", "бесплат", "разда", "подар", "цен", "хайвл",
+        "разыгр",
     ],
     "en": [
         "release", "released", "launch", "announc", "reveal", "trailer", "gameplay",
@@ -34,6 +45,11 @@ SCORE_WORDS = {
         "layoff", "remake", "remaster", "reboot", "unveil", "showcase", "award",
         "lawsuit", "controversy", "release date", "update", "patch", "sequel",
         "first look", "hands-on", "demo", "surprise", "acquire", "acquisition",
+        "confirmed", "cancelled", "canceled", "delayed", "postponed", "rumor",
+        "rumour", "leak", "hack", "rating", "metacritic", "interview", "players",
+        # скидки и раздачи
+        "discount", "sale", "deal", "free", "giveaway", "price", "cheap",
+        "bargain", "claim", "redeem",
     ],
 }
 
@@ -85,6 +101,60 @@ def _mymemory_translate(text: str) -> str:
         from deep_translator import MyMemoryTranslator
         _my = MyMemoryTranslator(source="en-US", target="ru-RU")
     return _my.translate(text)
+
+
+async def close_session() -> None:
+    """Корректно закрыть HTTP-сессию переводчика (вызывать при завершении бота)."""
+    global _session
+    if _session and not _session.closed:
+        await _session.close()
+    _session = None
+
+
+async def _translate(text: str, src: str = "en") -> str:
+    """
+    Перевод на русский с кэшем. Цепочка: clients5.google.com ->
+    deep-translator (Google) -> MyMemory. Если всё не удалось,
+    возвращаем исходный текст, чтобы пост не сорвался.
+    """
+    if not text:
+        return text
+    if text in _translate_cache:
+        return _translate_cache[text]
+
+    async with _tl_lock:
+        # 1) основной бесплатный эндпоинт с повторами
+        for attempt in range(1, 4):
+            try:
+                translated = await _clients5_translate(text, src)
+                if translated:
+                    _translate_cache[text] = translated
+                    await asyncio.sleep(0.3)
+                    return translated
+            except Exception as e:
+                log.warning("Перевод #1 не удался (попытка %d/3, %s…): %s", attempt, text[:40], e)
+                await asyncio.sleep(1.5 * attempt)
+
+        # 2) запасные переводчики
+        for name, backend in (("Google", _google_deep_translate), ("MyMemory", _mymemory_translate)):
+            try:
+                translated = await asyncio.to_thread(backend, text)
+                if translated:
+                    log.info("Перевод через запасной сервис: %s", name)
+                    _translate_cache[text] = translated
+                    return translated
+            except Exception as e:
+                log.warning("Запасной перевод %s не удался: %s", name, e)
+
+    log.warning("Перевод полностью не удался — публикую исходный текст")
+    return text
+
+
+async def _translate_item(item: NewsItem) -> None:
+    if item.lang != "en":
+        return
+    item.title = await _translate(item.title, src="en")
+    item.summary = await _translate(item.summary, src="en")
 
 
 def _norm_title(t: str) -> str:
@@ -143,71 +213,21 @@ def _drop_seen_and_dupes(items: list[NewsItem], seen: dict[str, str]) -> list[Ne
     return result
 
 
-# ---------------------------------------------------------------- перевод
+# ---------------------------------------------------------------- отбор
 
-async def _translate(text: str, src: str = "en") -> str:
-    """
-    Перевод на русский с кэшем. Цепочка: clients5.google.com ->
-    deep-translator (Google) -> MyMemory. Если всё не удалось,
-    возвращаем исходный текст, чтобы дайджест не сорвался.
-    """
-    if not text:
-        return text
-    if text in _translate_cache:
-        return _translate_cache[text]
-
-    async with _tl_lock:
-        # 1) основной бесплатный эндпоинт с повторами
-        for attempt in range(1, 4):
-            try:
-                translated = await _clients5_translate(text, src)
-                if translated:
-                    _translate_cache[text] = translated
-                    await asyncio.sleep(0.3)
-                    return translated
-            except Exception as e:
-                log.warning("Перевод #1 не удался (попытка %d/3, %s…): %s", attempt, text[:40], e)
-                await asyncio.sleep(1.5 * attempt)
-
-        # 2) запасные переводчики
-        for name, backend in (("Google", _google_deep_translate), ("MyMemory", _mymemory_translate)):
-            try:
-                translated = await asyncio.to_thread(backend, text)
-                if translated:
-                    log.info("Перевод через запасной сервис: %s", name)
-                    _translate_cache[text] = translated
-                    return translated
-            except Exception as e:
-                log.warning("Запасной перевод %s не удался: %s", name, e)
-
-    log.warning("Перевод полностью не удался — публикую исходный текст")
-    return text
-
-
-async def _translate_item(item: NewsItem) -> None:
-    if item.lang != "en":
-        return
-    item.title = await _translate(item.title, src="en")
-    item.summary = await _translate(item.summary, src="en")
-
-
-# ---------------------------------------------------------------- формирование
-
-async def close_session() -> None:
-    """Корректно закрыть HTTP-сессию переводчика (вызывать при завершении бота)."""
-    global _session
-    if _session and not _session.closed:
-        await _session.close()
-    _session = None
+async def _prepare_item(item: NewsItem) -> None:
+    """Обогащает новость перед публикацией: пересказ из статьи, картинка, перевод."""
+    await enrich_item(item)       # пересказ и картинка со страницы статьи
+    await _translate_item(item)   # перевод зарубежных новостей
 
 
 async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
     """
-    Собирает новости -> убирает повторы -> сортирует по интересности ->
-    переводит зарубежные -> возвращает топ-N для публикации.
+    Отбирает ОДНУ самую интересную новую новость (или две, если накопилась
+    большая очередь) и готовит её к публикации: пересказ, картинка, перевод.
+    Остальные новости остаются на следующие проверки — так публикации
+    выходят постепенно, по мере поступления.
     """
-    from news import collect_news
-
     hours = fresh_hours if fresh_hours is not None else CFG.fresh_hours
     items = await collect_news(fresh_hours=hours)
 
@@ -216,30 +236,19 @@ async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
 
     for it in items:
         it.score = score_item(it)
-    items.sort(key=lambda i: (i.score, i.published or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
-
-    top = items[: CFG.news_per_digest]
-    await asyncio.gather(*[_translate_item(it) for it in top])
-
-    return top
-
-
-def _fmt_date() -> str:
-    months = [
-        "января", "февраля", "марта", "апреля", "мая", "июня",
-        "июля", "августа", "сентября", "октября", "ноября", "декабря",
-    ]
-    now = datetime.now()
-    return f"{now.day} {months[now.month - 1]}"
-
-
-def header_text(count: int) -> str:
-    emoji = "🎮"
-    return (
-        f"{emoji} <b>Игровой дайджест</b> — {_fmt_date()}\n"
-        f"Самое интересное в индустрии за последние часы: {count} новостей\n"
-        f"{'─' * 24}"
+    candidates = sorted(
+        (it for it in items if it.score >= MIN_SCORE),
+        key=lambda i: (i.score, i.published or datetime.min.replace(tzinfo=timezone.utc)),
+        reverse=True,
     )
+    if not candidates:
+        log.info("Интересных новых новостей не нашлось (%d всего было)", len(items))
+        return []
+
+    batch = 2 if len(candidates) >= BACKLOG_BATCH_AT else 1
+    chosen = candidates[:batch]
+    await asyncio.gather(*[_prepare_item(it) for it in chosen])
+    return chosen
 
 
 def caption_for(item: NewsItem) -> str:

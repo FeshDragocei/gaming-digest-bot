@@ -23,6 +23,9 @@ USER_AGENT = (
 
 TAG_RE = re.compile(r"<[^>]+>")
 SPACES_RE = re.compile(r"\s+")
+SCRIPT_RE = re.compile(r"<(script|style|noscript|svg|form)[^>]*>.*?</\1>", re.S | re.I)
+P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.S | re.I)
+JUNK_RE = re.compile(r"cookie|куки|подписыва|реклам|18\+|sign in|subscribe", re.I)
 OG_IMAGE_RE = re.compile(
     r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
     re.IGNORECASE,
@@ -133,15 +136,48 @@ async def _fetch_source(session: aiohttp.ClientSession, source: dict) -> list[Ne
 
 
 async def _fetch_page_head(session: aiohttp.ClientSession, url: str) -> str:
-    """Скачивает начало HTML страницы статьи (для поиска og:image)."""
+    """Скачивает HTML страницы статьи (для og:image и пересказа)."""
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
                 return ""
-            data = await resp.content.read(120_000)
+            data = await resp.content.read(350_000)
             return data.decode("utf-8", errors="ignore")
     except Exception:
         return ""
+
+
+def _extract_article_text(page_html: str, limit: int = 600) -> str:
+    """Достаёт начало текста статьи (первые абзацы) для пересказа."""
+    cleaned = SCRIPT_RE.sub(" ", page_html)
+    paragraphs: list[str] = []
+    total = 0
+    for m in P_RE.finditer(cleaned):
+        text = _clean(m.group(1), 400)
+        if len(text) < 50 or JUNK_RE.search(text):
+            continue
+        paragraphs.append(text)
+        total += len(text)
+        if total >= limit:
+            break
+    text = " ".join(paragraphs)
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0] + "…"
+    return text
+
+
+async def enrich_item(item: NewsItem) -> None:
+    """Догружает страницу статьи: вытаскивает картинку (если её не было)
+    и настоящий пересказ новости из первых абзацев статьи."""
+    async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
+        page = await _fetch_page_head(session, item.url)
+    if not page:
+        return
+    if not item.image:
+        item.image = _extract_image({}, page)
+    text = _extract_article_text(page)
+    if len(text) >= 150:  # короткие выжимки не лучше описания из ленты
+        item.summary = text
 
 
 def _filter_fresh(items: list[NewsItem], hours: int) -> list[NewsItem]:
@@ -154,7 +190,7 @@ def _filter_fresh(items: list[NewsItem], hours: int) -> list[NewsItem]:
     return fresh
 
 
-async def collect_news(fresh_hours: int = 12, with_images: bool = True) -> list[NewsItem]:
+async def collect_news(fresh_hours: int = 24) -> list[NewsItem]:
     """Собирает свежие новости со всех источников (без ранжирования и дедупликации)."""
     connector = aiohttp.TCPConnector(limit=10, ssl=False)
     async with aiohttp.ClientSession(
@@ -166,7 +202,7 @@ async def collect_news(fresh_hours: int = 12, with_images: bool = True) -> list[
         items = _filter_fresh(items, fresh_hours)
 
         # Если за окно почти ничего не накопилось — берём свежие 15 из всех лент,
-        # чтобы дайджест не вышел пустым.
+        # чтобы не остаться без новостей.
         if len(items) < 3:
             all_items = [it for sub in results for it in sub]
             all_items.sort(
@@ -174,14 +210,6 @@ async def collect_news(fresh_hours: int = 12, with_images: bool = True) -> list[
                 reverse=True,
             )
             items = all_items[:15]
-
-        if with_images:
-            # Для новостей без картинки в ленте ищем og:image на странице статьи
-            no_img = [it for it in items if not it.image]
-            pages = await asyncio.gather(*[_fetch_page_head(session, it.url) for it in no_img])
-            for it, page in zip(no_img, pages):
-                if page:
-                    it.image = _extract_image({}, page)
 
     log.info("Итого собрано свежих новостей: %d", len(items))
     return items

@@ -56,21 +56,14 @@ async def _send_one_with_photo(bot: Bot, chat_id: str, item: NewsItem) -> bool:
 
 
 async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
-    """Публикует шапку дайджеста и каждую новость отдельным постом.
+    """Публикует отобранные новости: каждая — отдельный пост «фото + пересказ».
 
-    Формат «картинка + небольшой пост»: у каждого фото видна подпись с
-    заголовком, кратким описанием и ссылкой. Новости без картинки (или
-    с нескачиваемой) уходят текстом, чтобы ничего не потерялось.
+    Новости без картинки (или с нескачиваемой) уходят текстом, чтобы
+    ничего не потерялось.
     """
     if not items:
-        log.info("Дайджест пуст — нечего публиковать")
+        log.info("Нечего публиковать")
         return
-
-    # Шапка
-    try:
-        await bot.send_message(chat_id, digest.header_text(len(items)), parse_mode="HTML")
-    except Exception as e:
-        log.error("Не удалось отправить шапку в %s: %s", chat_id, e)
 
     for it in items:
         sent = False
@@ -85,9 +78,9 @@ async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
         if not sent:
             log.error("Новость не опубликована ни фото, ни текстом: %s", it.title[:60])
 
-    # Помечаем ВСЕ новости выпуска как показанные, чтобы не всплывали в следующем
+    # Помечаем опубликованное, чтобы новости не всплывали повторно
     mark_published(items)
-    log.info("Дайджест опубликован: %d новостей", len(items))
+    log.info("Опубликовано новостей: %d", len(items))
 
 
 async def make_and_publish(bot: Bot, chat_id: str) -> list[NewsItem]:

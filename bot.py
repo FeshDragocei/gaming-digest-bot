@@ -15,7 +15,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 # Windows-консоль часто в cp1251 — русские логи могут превращаться в кракозябры
 for _stream in (sys.stdout, sys.stderr):
@@ -41,11 +41,12 @@ router = Router()
 @router.message(CommandStart())
 async def cmd_start(m: Message):
     await m.answer(
-        "🎮 <b>Игровой дайджест</b>\n\n"
-        "Я собираю новости с игровых сайтов и публикую подборку "
-        "самого интересного в канал.\n\n"
+        "🎮 <b>Игровые новости</b>\n\n"
+        "Я слежу за игровыми сайтами и публикую в канал самые интересные "
+        "новости по мере их появления: релизы, анонсы, события индустрии, "
+        "необычные факты, скидки и раздачи.\n\n"
         "Команды:\n"
-        "/digest — собрать дайджест прямо сейчас\n"
+        "/digest — проверить и опубликовать следующую новость\n"
         "/chatid — узнать ID этого чата/канала\n"
         "/help — помощь"
     )
@@ -59,7 +60,7 @@ async def cmd_help(m: Message):
 @router.message(Command("digest"))
 async def cmd_digest(m: Message):
     target = CFG.channel or str(m.chat.id)
-    await m.answer(f"⏳ Собираю свежие новости и публикую дайджест в {target}…")
+    await m.answer(f"⏳ Ищу интересную новость и публикую в {target}…")
     try:
         items = await make_and_publish(m.bot, target)
         if items:
@@ -85,12 +86,12 @@ async def channel_chatid(m: Message):
 # ----------------------------------------------------------- фоновые задачи
 
 async def digest_job(bot: Bot):
-    """Выпуск дайджеста по расписанию."""
+    """Проверка новостей по расписанию: публикуем следующую интересную новость."""
     try:
         items = await make_and_publish(bot, CFG.channel)
-        log.info("Дайджест по расписанию: опубликовано %d новостей", len(items))
+        log.info("Проверка завершена: опубликовано %d новостей", len(items))
     except Exception:
-        log.exception("Дайджест по расписанию упал")
+        log.exception("Фоновая публикация упала")
 
 
 # ----------------------------------------------------------- запуск
@@ -113,9 +114,14 @@ async def main():
 
     tz = ZoneInfo(CFG.timezone)
     scheduler = AsyncIOScheduler(timezone=tz)
-    for hour, minute in CFG.digest_times:
-        scheduler.add_job(digest_job, CronTrigger(hour=hour, minute=minute, timezone=tz), args=[bot])
-        log.info("Дайджест запланирован на %02d:%02d (%s)", hour, minute, CFG.timezone)
+    scheduler.add_job(
+        digest_job,
+        IntervalTrigger(minutes=CFG.check_interval_minutes),
+        args=[bot],
+    )
+    log.info(
+        "Проверка новостей каждые %d мин (%s)", CFG.check_interval_minutes, CFG.timezone
+    )
     scheduler.start()
 
     log.info("Бот запущен. Ожидаю обновления…")
