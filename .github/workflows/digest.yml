@@ -35,6 +35,8 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           NEWS_PER_RUN: "5"
+          TOPIC_BATCH_CAP: "3"
+          TOPIC_DAILY_CAP: "8"
           FRESH_HOURS: "12"
           TIMEZONE: Europe/Moscow
         run: python scripts/publish_now.py

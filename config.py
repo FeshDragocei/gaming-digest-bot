@@ -21,6 +21,10 @@ class Config:
 
     # Максимум новостей за одну проверку (если накопилось много)
     news_per_run: int = int(os.getenv("NEWS_PER_RUN", "5"))
+    # Не больше N новостей одной темы за одну проверку
+    topic_batch_cap: int = int(os.getenv("TOPIC_BATCH_CAP", "3"))
+    # Не больше N новостей одной темы за сутки
+    topic_daily_cap: int = int(os.getenv("TOPIC_DAILY_CAP", "8"))
 
     # Сколько часов назад искать новости
     fresh_hours: int = int(os.getenv("FRESH_HOURS", "12"))

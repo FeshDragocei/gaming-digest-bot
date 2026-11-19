@@ -21,9 +21,7 @@ log = logging.getLogger(__name__)
 
 # Минимальная «интересность» для публикации (1 совпадение ключевого слова = 2 балла)
 MIN_SCORE = 2
-# Сколько новостей максимум за одну проверку
-TOPIC_BATCH_CAP = 1    # не больше одной новости на тему в рамках одной проверки
-TOPIC_DAILY_CAP = 4    # не больше N новостей одной темы за сутки
+# Лимиты тем и размера партии — в config.py (TOPIC_BATCH_CAP, TOPIC_DAILY_CAP, NEWS_PER_RUN)
 SEEN_TTL_DAYS = 7      # сколько дней помнить опубликованные новости
 DUP_SIMILARITY = 0.55  # порог похожести заголовков (0..1)
 
@@ -310,12 +308,63 @@ async def _prepare_item(item: NewsItem) -> None:
     await _translate_item(item)   # перевод зарубежных новостей
 
 
+def _select_candidates(candidates: list[NewsItem], seen: dict[str, dict]) -> list[NewsItem]:
+    """Выбирает новости для публикации с лимитами по темам.
+
+    Правила:
+    - максимум CFG.news_per_run новостей за проверку;
+    - не больше CFG.topic_batch_cap новостей одной темы за проверку;
+    - не больше CFG.topic_daily_cap новостей одной темы за сутки;
+    - если других тем среди кандидатов нет вовсе, партия добирается
+      лучшими из отсеянных по лимиту проверки — канал не должен пустовать.
+    """
+    now_utc = datetime.now(tz=timezone.utc)
+    day_counter: Counter[str] = Counter()
+    for v in _unique_values(seen):
+        try:
+            ts = datetime.fromisoformat(v["ts"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if v.get("t") and now_utc - ts <= timedelta(hours=24):
+            day_counter.update(_topic_tokens(v["t"]))
+
+    batch_counter: Counter[str] = Counter()
+    chosen: list[NewsItem] = []
+    capped_out: list[NewsItem] = []  # отсеяны лимитом «N новостей темы на проверку»
+    for it in candidates:
+        toks = _topic_tokens(it.orig_title or it.title)
+        if any(day_counter[t] + batch_counter[t] >= CFG.topic_daily_cap for t in toks):
+            continue  # суточный лимит темы исчерпан
+        if any(batch_counter[t] >= CFG.topic_batch_cap for t in toks):
+            capped_out.append(it)
+            continue
+        batch_counter.update(toks)
+        chosen.append(it)
+        if len(chosen) >= CFG.news_per_run:
+            break
+
+    # Исключение: если ни одной новости других тем нет вовсе — добираем из отсеянных
+    if len(chosen) < CFG.news_per_run and capped_out:
+        capped_tokens: set[str] = set()
+        for it in capped_out:
+            capped_tokens |= _topic_tokens(it.orig_title or it.title)
+        has_other = any(
+            _topic_tokens(it.orig_title or it.title) - capped_tokens for it in candidates
+        )
+        if not has_other:
+            for it in capped_out:
+                batch_counter.update(_topic_tokens(it.orig_title or it.title))
+                chosen.append(it)
+                if len(chosen) >= CFG.news_per_run:
+                    break
+
+    return chosen
+
+
 async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
     """
-    Отбирает новости для публикации: минимум одну, до NEWS_PER_RUN, если
-    накопилось много. Следит за разнообразием: не больше одной новости на
-    тему за проверку и не больше TOPIC_DAILY_CAP одной темы за сутки.
-    Остальные новости остаются на следующие проверки.
+    Отбирает новости для публикации: минимум одну (если есть что публиковать),
+    до NEWS_PER_RUN — если накопилось много. Следит за разнообразием тем.
     """
     hours = fresh_hours if fresh_hours is not None else CFG.fresh_hours
     items = await collect_news(fresh_hours=hours)
@@ -335,30 +384,7 @@ async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
         log.info("Интересных новых новостей не нашлось (%d всего было)", len(items))
         return []
 
-    # Лимит на тему: считаем темы уже опубликованного за сутки + текущей выборки
-    now_utc = datetime.now(tz=timezone.utc)
-    day_counter: Counter[str] = Counter()
-    for v in _unique_values(seen):
-        try:
-            ts = datetime.fromisoformat(v["ts"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if v.get("t") and now_utc - ts <= timedelta(hours=24):
-            day_counter.update(_topic_tokens(v["t"]))
-
-    batch_counter: Counter[str] = Counter()
-    chosen: list[NewsItem] = []
-    for it in candidates:
-        toks = _topic_tokens(it.orig_title or it.title)
-        if any(batch_counter[t] >= TOPIC_BATCH_CAP for t in toks):
-            continue  # тема уже есть в этой партии
-        if any(day_counter[t] + batch_counter[t] >= TOPIC_DAILY_CAP for t in toks):
-            continue  # тему за сутки приели
-        batch_counter.update(toks)
-        chosen.append(it)
-        if len(chosen) >= CFG.news_per_run:
-            break
-
+    chosen = _select_candidates(candidates, seen)
     if not chosen:
         log.info("Все кандидаты отсеялись лимитами тем (%d кандидатов)", len(candidates))
         return []
