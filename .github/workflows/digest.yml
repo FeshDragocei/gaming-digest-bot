@@ -7,8 +7,8 @@ on:
   workflow_dispatch:        # кнопка «Run workflow» — выпустить следующую новость сейчас
 
 concurrency:
-  group: digest            # одна проверка за раз
-  cancel-in-progress: true # зависшую отменяет следующий запуск, очередь не копится
+  group: digest            # одна проверка за раз; следующие ждут своей очереди
+  cancel-in-progress: false
 
 permissions:
   contents: write           # чтобы workflow мог сохранить историю новостей
@@ -16,7 +16,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 10      # зависший запуск принудительно завершается
+    timeout-minutes: 35     # паузы между постами + запас на сбор новостей
     steps:
       - name: Забрать код
         uses: actions/checkout@v4
@@ -34,6 +34,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          NEWS_PER_RUN: "5"
           FRESH_HOURS: "12"
           TIMEZONE: Europe/Moscow
         run: python scripts/publish_now.py

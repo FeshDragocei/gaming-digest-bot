@@ -19,6 +19,9 @@ class Config:
     check_interval_minutes: int = int(os.getenv("CHECK_INTERVAL_MINUTES", "30"))
     timezone: str = os.getenv("TIMEZONE", "Europe/Moscow")
 
+    # Максимум новостей за одну проверку (если накопилось много)
+    news_per_run: int = int(os.getenv("NEWS_PER_RUN", "5"))
+
     # Сколько часов назад искать новости
     fresh_hours: int = int(os.getenv("FRESH_HOURS", "12"))
 

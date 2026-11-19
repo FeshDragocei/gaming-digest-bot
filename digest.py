@@ -8,6 +8,7 @@ import html
 import json
 import logging
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -20,12 +21,11 @@ log = logging.getLogger(__name__)
 
 # Минимальная «интересность» для публикации (1 совпадение ключевого слова = 2 балла)
 MIN_SCORE = 2
-# Если столько новостей ждёт публикации — выпускаем за раз две, чтобы разгрести очередь
-BACKLOG_BATCH_AT = 10
-# Сколько дней помнить опубликованные новости (защита от повторов)
-SEEN_TTL_DAYS = 7
-# Порог похожести заголовков (0..1): выше — та же новость с другого сайта
-DUP_SIMILARITY = 0.55
+# Сколько новостей максимум за одну проверку
+TOPIC_BATCH_CAP = 1    # не больше одной новости на тему в рамках одной проверки
+TOPIC_DAILY_CAP = 4    # не больше N новостей одной темы за сутки
+SEEN_TTL_DAYS = 7      # сколько дней помнить опубликованные новости
+DUP_SIMILARITY = 0.55  # порог похожести заголовков (0..1)
 
 # Ключевые слова, повышающие интересность новости: релизы, анонсы, события
 # индустрии, необычные факты, а также скидки, распродажи и раздачи
@@ -157,6 +157,8 @@ async def _translate(text: str, src: str = "en") -> str:
 async def _translate_item(item: NewsItem) -> None:
     if item.lang != "en":
         return
+    if not item.orig_title:
+        item.orig_title = item.title
     item.title = await _translate(item.title, src="en")
     item.summary = await _translate(item.summary, src="en")
 
@@ -165,8 +167,62 @@ def _norm_title(t: str) -> str:
     return re.sub(r"[^a-zа-яё0-9 ]", "", t.lower()).strip()
 
 
-def _hash(title: str, url: str) -> str:
+def _norm_url(url: str) -> str:
+    """Нормализует ссылку: убирает мусорные параметры вроде utm_."""
+    url = (url or "").strip().lower().split("#", 1)[0]
+    if "?" in url:
+        base, query = url.split("?", 1)
+        keep = [
+            kv for kv in query.split("&")
+            if kv and not kv.split("=", 1)[0].startswith(("utm_", "fbclid", "gclid", "yclid"))
+        ]
+        url = base + ("?" + "&".join(keep) if keep else "")
+    return url.rstrip("/")
+
+
+def _hash(url: str) -> str:
+    """Отпечаток новости по ссылке — не меняется от перевода заголовка."""
+    return hashlib.md5(_norm_url(url).encode()).hexdigest()[:12]
+
+
+def _title_hash(title: str) -> str:
     return hashlib.md5(_norm_title(title).encode()).hexdigest()[:12]
+
+
+# Слова, которые не считаются «темой» новости (слишком общие)
+_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "have", "has", "had",
+    "are", "was", "were", "will", "would", "its", "his", "her", "their", "our",
+    "new", "how", "why", "who", "what", "when", "out", "get", "got", "top",
+    "best", "first", "after", "over", "into", "about", "says", "said", "here",
+    "all", "more", "most", "than", "then", "now", "day", "year", "years",
+    "game", "games", "gaming", "video", "off", "per", "via", "one", "two",
+    "you", "your", "they", "them", "she", "him", "not", "but", "yet", "can",
+    "для", "как", "что", "все", "это", "еще", "уже", "при", "его", "ее", "их",
+    "или", "так", "там", "чем", "нее", "ней", "они", "оно", "мой", "свой",
+    "новый", "новая", "новое", "под", "над", "про", "сам", "два", "три",
+    "игра", "игры", "игре", "игр", "игровой", "новости", "новость",
+}
+
+
+def _topic_tokens(title: str) -> set[str]:
+    """«Тема» новости — значимые слова заголовка (для лимита на тему)."""
+    text = (title or "").lower().replace("grand theft auto", "gta")
+    words = re.findall(r"[a-zа-яё0-9]+", text)
+    return {w for w in words if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def _unique_values(seen: dict[str, dict]) -> list[dict]:
+    """История хранит по два ключа на новость (ссылка + заголовок) — убираем двойников."""
+    uniq: list[dict] = []
+    seen_keys: set = set()
+    for v in seen.values():
+        key = (v.get("ts"), v.get("t"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        uniq.append(v)
+    return uniq
 
 
 def score_item(item: NewsItem) -> int:
@@ -216,7 +272,10 @@ def mark_published(items: list[NewsItem]) -> None:
     seen = _load_seen()
     now = datetime.now(tz=timezone.utc).isoformat()
     for it in items:
-        seen[_hash(it.title, it.url)] = {"ts": now, "t": _norm_title(it.title)}
+        value = {"ts": now, "t": _norm_title(it.orig_title or it.title)}
+        # отпечаток и по ссылке, и по исходному заголовку — двойная защита
+        seen[_hash(it.url)] = value
+        seen[_title_hash(it.orig_title or it.title)] = value
     _save_seen(seen)
 
 
@@ -227,14 +286,13 @@ def _similar(a: str, b: str) -> bool:
 def _drop_seen_and_dupes(items: list[NewsItem], seen: dict[str, dict]) -> list[NewsItem]:
     """Убирает уже публиковавшиеся и очень похожие новости (в т.ч. с прошлых
     выпусков — та же история с другого сайта в другой формулировке)."""
-    seen_titles = [v.get("t", "") for v in seen.values() if v.get("t")]
+    seen_titles = list({v.get("t") for v in seen.values() if v.get("t")})
     result: list[NewsItem] = []
     kept_titles: list[str] = []
     for it in items:
-        h = _hash(it.title, it.url)
-        if h in seen:
+        norm = _norm_title(it.orig_title or it.title)
+        if _hash(it.url) in seen or _title_hash(norm) in seen:
             continue
-        norm = _norm_title(it.title)
         if any(_similar(norm, other) for other in seen_titles):
             continue  # похожее уже выходило в канал
         if any(_similar(norm, kept) for kept in kept_titles):
@@ -254,10 +312,10 @@ async def _prepare_item(item: NewsItem) -> None:
 
 async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
     """
-    Отбирает ОДНУ самую интересную новую новость (или две, если накопилась
-    большая очередь) и готовит её к публикации: пересказ, картинка, перевод.
-    Остальные новости остаются на следующие проверки — так публикации
-    выходят постепенно, по мере поступления.
+    Отбирает новости для публикации: минимум одну, до NEWS_PER_RUN, если
+    накопилось много. Следит за разнообразием: не больше одной новости на
+    тему за проверку и не больше TOPIC_DAILY_CAP одной темы за сутки.
+    Остальные новости остаются на следующие проверки.
     """
     hours = fresh_hours if fresh_hours is not None else CFG.fresh_hours
     items = await collect_news(fresh_hours=hours)
@@ -277,8 +335,34 @@ async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
         log.info("Интересных новых новостей не нашлось (%d всего было)", len(items))
         return []
 
-    batch = 2 if len(candidates) >= BACKLOG_BATCH_AT else 1
-    chosen = candidates[:batch]
+    # Лимит на тему: считаем темы уже опубликованного за сутки + текущей выборки
+    now_utc = datetime.now(tz=timezone.utc)
+    day_counter: Counter[str] = Counter()
+    for v in _unique_values(seen):
+        try:
+            ts = datetime.fromisoformat(v["ts"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if v.get("t") and now_utc - ts <= timedelta(hours=24):
+            day_counter.update(_topic_tokens(v["t"]))
+
+    batch_counter: Counter[str] = Counter()
+    chosen: list[NewsItem] = []
+    for it in candidates:
+        toks = _topic_tokens(it.orig_title or it.title)
+        if any(batch_counter[t] >= TOPIC_BATCH_CAP for t in toks):
+            continue  # тема уже есть в этой партии
+        if any(day_counter[t] + batch_counter[t] >= TOPIC_DAILY_CAP for t in toks):
+            continue  # тему за сутки приели
+        batch_counter.update(toks)
+        chosen.append(it)
+        if len(chosen) >= CFG.news_per_run:
+            break
+
+    if not chosen:
+        log.info("Все кандидаты отсеялись лимитами тем (%d кандидатов)", len(candidates))
+        return []
+
     await asyncio.gather(*[_prepare_item(it) for it in chosen])
     return chosen
 

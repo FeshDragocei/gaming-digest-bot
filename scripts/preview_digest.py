@@ -54,11 +54,9 @@ async def main():
         print(cap)
         print("-" * 60)
 
+    # закрываем HTTP-сессию переводчика, чтобы не было предупреждений
+    await digest.close_session()
+
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    finally:
-        # закрываем HTTP-сессию переводчика, чтобы не было предупреждений
-        import digest
-        asyncio.run(digest.close_session())
+    asyncio.run(main())

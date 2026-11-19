@@ -46,6 +46,7 @@ class NewsItem:
     lang: str = "ru"
     published: datetime | None = None
     score: int = 0
+    orig_title: str = ""  # исходный заголовок до перевода (для защиты от повторов)
 
 
 def _clean(text: str, limit: int = 500) -> str:
@@ -101,6 +102,7 @@ def _parse_entry(entry, source: dict) -> NewsItem:
 
     return NewsItem(
         title=_clean(entry.get("title", ""), 200),
+        orig_title=_clean(entry.get("title", ""), 200),
         url=(entry.get("link") or "").strip(),
         summary=_clean(entry.get("summary", "")),
         image=_extract_image(entry),

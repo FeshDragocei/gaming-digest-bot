@@ -1,8 +1,9 @@
-"""Публикация дайджеста в Telegram-канал."""
+"""Публикация новостей в Telegram-канал."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 
 import aiohttp
 from aiogram import Bot
@@ -65,7 +66,7 @@ async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
         log.info("Нечего публиковать")
         return
 
-    for it in items:
+    for idx, it in enumerate(items):
         sent = False
         if it.image:
             sent = await _send_one_with_photo(bot, chat_id, it)
@@ -77,6 +78,12 @@ async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
                 log.warning("Текстовая новость не отправилась: %s", e)
         if not sent:
             log.error("Новость не опубликована ни фото, ни текстом: %s", it.title[:60])
+
+        # Пауза 3–5 минут между постами, чтобы лента не выглядела потоком
+        if idx < len(items) - 1:
+            pause = random.uniform(180, 300)
+            log.info("Пауза %.0f сек перед следующей новостью", pause)
+            await asyncio.sleep(pause)
 
     # Помечаем опубликованное, чтобы новости не всплывали повторно
     mark_published(items)
