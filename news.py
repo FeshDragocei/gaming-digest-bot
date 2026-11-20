@@ -203,15 +203,8 @@ async def collect_news(fresh_hours: int = 24) -> list[NewsItem]:
         items = [it for sub in results for it in sub]
         items = _filter_fresh(items, fresh_hours)
 
-        # Если за окно почти ничего не накопилось — берём свежие 15 из всех лент,
-        # чтобы не остаться без новостей.
-        if len(items) < 3:
-            all_items = [it for sub in results for it in sub]
-            all_items.sort(
-                key=lambda i: i.published or datetime.min.replace(tzinfo=timezone.utc),
-                reverse=True,
-            )
-            items = all_items[:15]
+        # Никаких запасных вариантов: если свежих новостей нет — публикуем
+        # в этот раз ничего и просто ждём следующей проверки.
 
     log.info("Итого собрано свежих новостей: %d", len(items))
     return items
