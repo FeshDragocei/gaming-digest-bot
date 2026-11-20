@@ -26,6 +26,12 @@ class Config:
     # Не больше N новостей одной темы за сутки
     topic_daily_cap: int = int(os.getenv("TOPIC_DAILY_CAP", "8"))
 
+    # Минимальная пауза между публикациями (часы) — бот не постит чаще
+    publish_every_hours: int = int(os.getenv("PUBLISH_EVERY_HOURS", "3"))
+
+    # Файл с временем последней публикации
+    state_file: Path = BASE_DIR / "data" / "state.json"
+
     # Сколько часов назад искать новости
     fresh_hours: int = int(os.getenv("FRESH_HOURS", "12"))
 

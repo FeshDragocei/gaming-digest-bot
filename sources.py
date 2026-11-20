@@ -34,6 +34,12 @@ SOURCES: list[dict] = [
         "lang": "ru",
         "enabled": True,
     },
+    {
+        "name": "Gamemag",
+        "url": "https://gamemag.ru/rss/feed",
+        "lang": "ru",
+        "enabled": True,
+    },
     # ================= Зарубежные (переводятся автоматически) =================
     {
         "name": "IGN",
@@ -68,6 +74,66 @@ SOURCES: list[dict] = [
     {
         "name": "Polygon",
         "url": "https://www.polygon.com/rss/index.xml",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "Kotaku",
+        "url": "https://kotaku.com/feed",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "VG247",
+        "url": "https://www.vg247.com/feed",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "GamesRadar",
+        "url": "https://www.gamesradar.com/rss/",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "GamesIndustry.biz",
+        "url": "https://www.gamesindustry.biz/feed",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "PCGamesN",
+        "url": "https://www.pcgamesn.com/feed/rss",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "Video Games Chronicle",
+        "url": "https://www.videogameschronicle.com/feed/",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "Nintendo Life",
+        "url": "https://www.nintendolife.com/feeds/news",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "Push Square",
+        "url": "https://www.pushsquare.com/feeds/news",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "Destructoid",
+        "url": "https://www.destructoid.com/feed/",
+        "lang": "en",
+        "enabled": True,
+    },
+    {
+        "name": "Siliconera",
+        "url": "https://www.siliconera.com/feed/",
         "lang": "en",
         "enabled": True,
     },

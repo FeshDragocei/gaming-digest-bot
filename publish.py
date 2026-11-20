@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+from datetime import datetime, timezone
 
 import aiohttp
 from aiogram import Bot
@@ -19,6 +21,33 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+
+
+# ------------------------------------------------- пауза между публикациями
+
+def _hours_since_last_publish() -> float | None:
+    """Сколько часов прошло с последней публикации (None — никогда)."""
+    try:
+        state = json.loads(CFG.state_file.read_text(encoding="utf-8"))
+        last = datetime.fromisoformat(state["last_publish"])
+        return (datetime.now(timezone.utc) - last).total_seconds() / 3600
+    except Exception:
+        return None
+
+
+def _save_last_publish_time() -> None:
+    """Запоминает время публикации (файл коммитится workflow'ом)."""
+    try:
+        CFG.state_file.parent.mkdir(parents=True, exist_ok=True)
+        CFG.state_file.write_text(
+            json.dumps(
+                {"last_publish": datetime.now(timezone.utc).isoformat()},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        log.warning("Не удалось сохранить время публикации: %s", e)
 
 
 async def _download_image(url: str) -> bytes | None:
@@ -90,8 +119,22 @@ async def publish_digest(bot: Bot, chat_id: str, items: list[NewsItem]) -> None:
     log.info("Опубликовано новостей: %d", len(items))
 
 
-async def make_and_publish(bot: Bot, chat_id: str) -> list[NewsItem]:
-    """Полный цикл: собрать -> сформировать -> опубликовать. Возвращает список новостей."""
+async def make_and_publish(bot: Bot, chat_id: str, force: bool = False) -> list[NewsItem]:
+    """
+    Полный цикл: собрать -> сформировать -> опубликовать. Возвращает список новостей.
+
+    force=True обходит паузу PUBLISH_EVERY_HOURS (для команды /digest).
+    """
+    if not force:
+        elapsed = _hours_since_last_publish()
+        if elapsed is not None and elapsed < CFG.publish_every_hours:
+            log.info(
+                "С последней публикации прошло %.1f ч (< %d ч) — пропускаю проверку",
+                elapsed, CFG.publish_every_hours,
+            )
+            return []
     items = await digest.build_digest()
+    if items:
+        _save_last_publish_time()
     await publish_digest(bot, chat_id, items)
     return items

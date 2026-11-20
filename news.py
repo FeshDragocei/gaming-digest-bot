@@ -149,8 +149,8 @@ async def _fetch_page_head(session: aiohttp.ClientSession, url: str) -> str:
         return ""
 
 
-def _extract_article_text(page_html: str, limit: int = 600) -> str:
-    """Достаёт начало текста статьи (первые абзацы) для пересказа."""
+def _extract_article_text(page_html: str, limit: int = 800) -> str:
+    """Достаёт начало текста статьи (несколько абзацев) для пересказа."""
     cleaned = SCRIPT_RE.sub(" ", page_html)
     paragraphs: list[str] = []
     total = 0

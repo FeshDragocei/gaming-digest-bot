@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 MIN_SCORE = 2
 # Лимиты тем и размера партии — в config.py (TOPIC_BATCH_CAP, TOPIC_DAILY_CAP, NEWS_PER_RUN)
 SEEN_TTL_DAYS = 7      # сколько дней помнить опубликованные новости
-DUP_SIMILARITY = 0.55  # порог похожести заголовков (0..1)
+DUP_SIMILARITY = 0.5   # порог похожести заголовков (0..1) — ниже = строже
 
 # Ключевые слова, повышающие интересность новости: релизы, анонсы, события
 # индустрии, необычные факты, а также скидки, распродажи и раздачи
@@ -210,6 +210,35 @@ def _topic_tokens(title: str) -> set[str]:
     return {w for w in words if len(w) >= 3 and w not in _STOPWORDS}
 
 
+# Слова-признаки игровой тематики: без хотя бы одного из них новость не публикуется
+GAMING_WORDS = [
+    # универсальные
+    "игр", "гейм", "геймер", "трейлер", "геймплей", "релиз", "анонс", "патч",
+    "рогалик", "шутер", "стратег", "rpg", "ммо", "mmo", "mmorpg",
+    "dlc", "модиф", "моддинг", "mods", "modding", "early access", "демоверс",
+    "инди", "киберспорт", "esports", "спидран", "стример", "twitch",
+    "ремейк", "ремастер", "сиквел", "персонаж", "прохожден", "гайд",
+    "steam", "playstation", "плейстейшн", "ps5", "ps4", "psn",
+    "xbox", "нинтенд", "nintendo", "switch", "консол", "геймпад", "gog",
+    "gamescom", "game awards", "tga", "handheld", "controller", "console",
+    "beta", "demo", "speedrun", "indie", "open world", "boss", "quest", "loot",
+    # названия игр и серий
+    "gta", "wow", "pokemon", "покемон", "zelda", "зельда", "mario", "марио",
+    "minecraft", "майнкрафт", "fortnite", "фортнайт", "valorant", "валорант",
+    "dota", "дота", "counter-strike", "cs2", "baldur", "балдур", "hogwarts",
+    "хогвартс", "skyrim", "скайрим", "fallout", "фоллаут", "roblox", "роблокс",
+    "genshin", "геншин", "witcher", "ведьмак", "overwatch", "elden",
+    "cyberpunk", "сайкерпанк", "assassin", "resident evil", "hearthstone",
+    "atelier", "monopoly", "europa universalis", "lego",
+]
+
+
+def is_gaming(item: NewsItem) -> bool:
+    """True, если новость про игры (по словам в заголовке и описании)."""
+    text = f"{item.title} {item.summary}".lower()
+    return any(re.search(r"\b" + re.escape(w), text) for w in GAMING_WORDS)
+
+
 def _unique_values(seen: dict[str, dict]) -> list[dict]:
     """История хранит по два ключа на новость (ссылка + заголовок) — убираем двойников."""
     uniq: list[dict] = []
@@ -368,6 +397,11 @@ async def build_digest(fresh_hours: int | None = None) -> list[NewsItem]:
     """
     hours = fresh_hours if fresh_hours is not None else CFG.fresh_hours
     items = await collect_news(fresh_hours=hours)
+
+    # только игровые новости
+    before = len(items)
+    items = [it for it in items if is_gaming(it)]
+    log.info("Игровой фильтр: %d из %d новостей прошли", len(items), before)
 
     seen = _load_seen()
     items = _drop_seen_and_dupes(items, seen)

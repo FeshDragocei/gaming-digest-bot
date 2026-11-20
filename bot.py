@@ -62,7 +62,7 @@ async def cmd_digest(m: Message):
     target = CFG.channel or str(m.chat.id)
     await m.answer(f"⏳ Ищу интересную новость и публикую в {target}…")
     try:
-        items = await make_and_publish(m.bot, target)
+        items = await make_and_publish(m.bot, target, force=True)
         if items:
             await m.answer(f"✅ Готово! Опубликовано новостей: {len(items)}")
         else:
